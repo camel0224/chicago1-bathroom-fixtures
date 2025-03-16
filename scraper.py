@@ -7,9 +7,9 @@ import logging
 class FergusonScraper:
     def __init__(self):
         self.base_url = "https://www.ferguson.com"
-        self.brands = {
-            'kohler': '/brands/kohler',
-            'toto': '/brands/toto'
+        self.brand_urls = {
+            'KOHLER': 'https://www.ferguson.com/category/brands/kohler/_/N-zbq3n5',
+            'TOTO': 'https://www.ferguson.com/category/brands/toto/_/N-zbq40g'
         }
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36',
@@ -18,107 +18,112 @@ class FergusonScraper:
             'Connection': 'keep-alive',
         }
 
-    def get_brand_categories(self, brand_url):
-        """Get all categories for a specific brand"""
-        try:
-            response = requests.get(self.base_url + brand_url, headers=self.headers)
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            categories = []
-            category_links = soup.find_all('a', class_='category-link')
-            
-            for link in category_links:
-                category_url = self.base_url + link['href']
-                category_name = link.text.strip()
-                categories.append({
-                    'name': category_name,
-                    'url': category_url
-                })
-            
-            return categories
-            
-        except Exception as e:
-            print(f"Error getting categories: {e}")
-            return []
-
-    def get_products_from_category(self, category_url, brand):
-        """Get all products from a specific category"""
+    def get_products_for_brand(self, brand_name, brand_url):
+        """Get all products for a specific brand"""
         products = []
         page = 1
         
         while True:
             try:
-                # Add brand filter to URL
-                url = f"{category_url}?page={page}&brand={brand}"
+                # Construct URL with pagination
+                url = f"{brand_url}?page={page}"
+                print(f"Scraping {brand_name} - Page {page}")
+                
                 response = requests.get(url, headers=self.headers)
-                soup = BeautifulSoup(response.text, 'html.parser')
-                
-                product_cards = soup.find_all('div', class_='product-card')
-                
-                if not product_cards:
+                if response.status_code != 200:
+                    print(f"Failed to get page {page} for {brand_name}")
                     break
                 
-                for card in product_cards:
-                    product = self.extract_product_info(card, brand)
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Find all product containers
+                product_containers = soup.find_all('div', class_='product-container')
+                
+                if not product_containers:
+                    print(f"No more products found for {brand_name} on page {page}")
+                    break
+                
+                for container in product_containers:
+                    product = self.extract_product_info(container, brand_name)
                     if product:
                         products.append(product)
+                        print(f"Added product: {product['name']}")
                 
-                # Check for next page
-                next_button = soup.find('a', class_='next-page')
+                # Check if there's a next page
+                next_button = soup.find('a', {'aria-label': 'Next'})
                 if not next_button:
+                    print(f"No more pages for {brand_name}")
                     break
                 
                 page += 1
-                time.sleep(1)  # Be nice to the server
+                time.sleep(2)  # Be nice to the server
                 
             except Exception as e:
-                print(f"Error on page {page}: {e}")
+                print(f"Error on page {page} for {brand_name}: {e}")
                 break
-                
+        
         return products
 
-    def extract_product_info(self, card, brand):
-        """Extract information from a product card"""
+    def extract_product_info(self, container, brand_name):
+        """Extract product information from container"""
         try:
-            # Basic product info
-            title = card.find('h2', class_='product-title').text.strip()
+            # Get product name
+            name_elem = container.find('a', class_='product-description')
+            if not name_elem:
+                return None
+            
+            name = name_elem.text.strip()
+            product_url = self.base_url + name_elem['href']
+            
+            # Get product ID
+            product_id = container.get('data-itemid', '')
             
             # Get price
-            price_elem = card.find('span', class_='price')
-            price = float(price_elem.text.replace('$', '').replace(',', '')) if price_elem else None
-            
-            # Get product link and ID
-            product_link = card.find('a', class_='product-link')
-            product_url = self.base_url + product_link['href'] if product_link else None
-            product_id = card.get('data-product-id', '')
+            price_elem = container.find('span', class_='price')
+            price = None
+            if price_elem:
+                price_text = price_elem.text.strip().replace('$', '').replace(',', '')
+                try:
+                    price = float(price_text)
+                except:
+                    pass
             
             # Get image
-            img = card.find('img')
-            image_url = img['src'] if img else None
+            img_elem = container.find('img', class_='product-image')
+            image_url = img_elem['src'] if img_elem else None
+            
+            # Get category
+            category_elem = container.find('div', class_='product-category')
+            category = category_elem.text.strip() if category_elem else 'Uncategorized'
             
             # Get description
-            desc_elem = card.find('div', class_='description')
+            desc_elem = container.find('div', class_='product-details')
             description = desc_elem.text.strip() if desc_elem else ''
             
             # Get specifications
             specs = {}
-            spec_list = card.find_all('div', class_='specification')
+            spec_list = container.find_all('div', class_='specification')
             for spec in spec_list:
-                key = spec.find('span', class_='label')
+                label = spec.find('span', class_='label')
                 value = spec.find('span', class_='value')
-                if key and value:
-                    specs[key.text.strip()] = value.text.strip()
+                if label and value:
+                    specs[label.text.strip()] = value.text.strip()
+            
+            # Get model number
+            model_elem = container.find('div', class_='model-number')
+            model_number = model_elem.text.strip() if model_elem else ''
             
             return {
                 'id': product_id,
-                'name': title,
+                'name': name,
+                'brand': brand_name,
                 'price': price,
-                'brand': brand.upper(),
-                'image_url': image_url,
-                'product_url': product_url,
+                'model_number': model_number,
+                'category': category,
                 'description': description,
                 'specifications': specs,
-                'category': self.get_product_category(card),
+                'image_url': image_url,
+                'product_url': product_url,
                 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
             }
             
@@ -126,32 +131,19 @@ class FergusonScraper:
             print(f"Error extracting product info: {e}")
             return None
 
-    def get_product_category(self, card):
-        """Extract category from breadcrumb"""
-        try:
-            breadcrumb = card.find('div', class_='breadcrumb')
-            if breadcrumb:
-                return breadcrumb.text.strip()
-            return "Uncategorized"
-        except:
-            return "Uncategorized"
-
-    def scrape_brand_products(self):
-        """Scrape all products from Kohler and TOTO"""
+    def scrape_all_products(self):
+        """Scrape all products from both brands"""
         all_products = []
         
-        for brand, brand_url in self.brands.items():
-            print(f"Scraping {brand.upper()} products...")
-            categories = self.get_brand_categories(brand_url)
+        for brand_name, brand_url in self.brand_urls.items():
+            print(f"\nStarting to scrape {brand_name} products...")
+            brand_products = self.get_products_for_brand(brand_name, brand_url)
+            all_products.extend(brand_products)
+            print(f"Found {len(brand_products)} {brand_name} products")
             
-            for category in categories:
-                print(f"Scraping category: {category['name']}")
-                products = self.get_products_from_category(category['url'], brand)
-                all_products.extend(products)
-                
-                # Save progress after each category
-                self.save_products(all_products)
-                time.sleep(2)  # Be nice to the server
+            # Save progress after each brand
+            self.save_products(all_products)
+            time.sleep(3)  # Pause between brands
         
         return all_products
     
@@ -166,8 +158,9 @@ class FergusonScraper:
 
 def main():
     scraper = FergusonScraper()
-    products = scraper.scrape_brand_products()
-    print(f"Total products scraped: {len(products)}")
+    print("Starting scraper...")
+    products = scraper.scrape_all_products()
+    print(f"\nScraping completed. Total products found: {len(products)}")
 
 if __name__ == "__main__":
     main()
